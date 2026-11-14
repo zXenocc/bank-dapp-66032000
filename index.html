@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bank DApp | Assignment 5</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f0f4f8;
+      color: #192944;
+      font: 16px/1.55 "Leelawadee UI", "Noto Sans Thai", system-ui, sans-serif;
+    }
+    main { width: min(100% - 32px, 680px); margin: 36px auto; }
+    header, section { padding: 24px; }
+    header {
+      background: #162b4d;
+      color: #f8fbff;
+      border-radius: 16px 16px 0 0;
+    }
+    section { background: #fff; border: 1px solid #dbe4ef; }
+    section:last-child { border-radius: 0 0 16px 16px; }
+    h1 { margin: 0 0 4px; font-size: 2rem; }
+    h2 { margin: 0 0 8px; font-size: 1.15rem; }
+    p { margin: 4px 0; }
+    .balance { font-size: clamp(1.6rem, 5vw, 2.2rem); font-weight: 700; overflow-wrap: anywhere; }
+    .detail, #status { overflow-wrap: anywhere; }
+    .detail { color: #41536d; }
+    label { display: block; font-weight: 600; margin: 14px 0 5px; }
+    input, button { font: inherit; border-radius: 8px; padding: 9px 14px; }
+    input { width: 100%; border: 1px solid #8496ac; color: inherit; background: #fff; }
+    button { background: #1456a2; border: 1px solid #1456a2; color: #fff; cursor: pointer; }
+    button.secondary { background: #fff; color: #174a84; }
+    button:disabled, input:disabled { opacity: .55; cursor: default; }
+    :focus-visible { outline: 3px solid #0d76d2; outline-offset: 3px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    #status { margin-top: 12px; }
+    #status[data-error="true"] { color: #a12727; }
+    a { color: #1456a2; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.15.0/ethers.umd.min.js"
+    integrity="sha384-OwtfwhPoP4aGLIw192UbPWjNbSkb7AllEbIhEJ01Yp8MxhNLLNUMA+DSjh6Zct05"
+    crossorigin="anonymous" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Bank DApp</h1>
+      <p>Assignment 5 · Ethereum Hoodi</p>
+      <!-- ตรวจชื่อและรหัสก่อนเผยแพร่บน GitHub Pages -->
+      <p>66032000 · ณัฏณรัณ สุขล้วน</p>
+    </header>
+
+    <section aria-labelledby="connection-heading">
+      <h2 id="connection-heading">การเชื่อมต่อ</h2>
+      <div class="actions"><button id="connect" type="button">เชื่อมต่อ MetaMask</button></div>
+      <p class="detail">บัญชี <span id="account">—</span></p>
+      <p class="detail">Smart Contract <span id="contract-address">—</span></p>
+    </section>
+
+    <section aria-labelledby="balance-heading">
+      <h2 id="balance-heading">ยอดฝากของคุณในสัญญา</h2>
+      <p class="balance"><output id="balance" aria-live="polite">—</output> ETH</p>
+      <label for="amount">จำนวนเงิน (ETH)</label>
+      <input id="amount" type="text" inputmode="decimal" placeholder="เช่น 0.01"
+        autocomplete="off" disabled>
+      <div class="actions">
+        <button id="deposit" type="button" disabled>Deposit</button>
+        <button id="withdraw" class="secondary" type="button" disabled>Withdraw</button>
+        <button id="check" class="secondary" type="button" disabled>Check Balance</button>
+      </div>
+      <p id="status" role="status">เชื่อมต่อ MetaMask บน Hoodi เพื่อเริ่มใช้งาน</p>
+      <p><a id="transaction-link" target="_blank" rel="noopener" hidden>ดูธุรกรรมบน Hoodi Etherscan ↗</a></p>
+    </section>
+  </main>
+
+  <script>
+    // วาง Contract Address จากการ Deploy Bank บน Hoodi ตรงนี้
+    const CONTRACT_ADDRESS = "0x89141Fe2804bae088C05e334C04D5bA44b37C80f";
+    const HOODI_CHAIN_ID = 560048n;
+    const HOODI_EXPLORER = "https://hoodi.etherscan.io";
+
+    // ใช้เฉพาะคำอธิบายสามฟังก์ชันที่เว็บเรียก
+    const BANK_ABI = [
+      "function deposit() payable",
+      "function withdraw(uint256 amount)",
+      "function checkBlance() view returns (uint256 balance)"
+    ];
+
+    const connectButton = document.getElementById("connect");
+    const depositButton = document.getElementById("deposit");
+    const withdrawButton = document.getElementById("withdraw");
+    const checkButton = document.getElementById("check");
+    const accountLabel = document.getElementById("account");
+    const contractLabel = document.getElementById("contract-address");
+    const balanceLabel = document.getElementById("balance");
+    const amountInput = document.getElementById("amount");
+    const statusLabel = document.getElementById("status");
+    const transactionLink = document.getElementById("transaction-link");
+
+    // MetaMask อาจถูกติดตั้งพร้อมกับ wallet extension อื่น
+    const injectedWallet = window.ethereum;
+    const wallet = injectedWallet?.providers?.find((provider) => provider.isMetaMask)
+      || (injectedWallet?.isMetaMask ? injectedWallet : null);
+
+    let bank = null;
+    let busy = false;
+
+    function showStatus(message, isError = false) {
+      statusLabel.textContent = message;
+      statusLabel.dataset.error = String(isError);
+    }
+
+    function setBusy(value) {
+      busy = value;
+      connectButton.disabled = busy || bank !== null;
+      const actionsDisabled = busy || bank === null;
+      amountInput.disabled = actionsDisabled;
+      depositButton.disabled = actionsDisabled;
+      withdrawButton.disabled = actionsDisabled;
+      checkButton.disabled = actionsDisabled;
+    }
+
+    function showError(error) {
+      const code = error.code;
+      if (code === 4001 || code === "ACTION_REJECTED") {
+        showStatus("ยกเลิกคำขอใน MetaMask แล้ว", true);
+      } else if (code === "INSUFFICIENT_FUNDS") {
+        showStatus("Hoodi ETH ใน MetaMask ไม่พอสำหรับยอดฝากหรือค่า gas", true);
+      } else {
+        showStatus(error.reason || error.shortMessage || error.message || "เกิดข้อผิดพลาด", true);
+      }
+    }
+
+    async function refreshBalance(contract = bank) {
+      const balanceInWei = await contract.checkBlance();
+      balanceLabel.textContent = ethers.formatEther(balanceInWei);
+    }
+
+    async function connectWallet() {
+      setBusy(true);
+      try {
+        if (!wallet) {
+          throw new Error("เปิดเว็บด้วยเบราว์เซอร์ที่ติดตั้งและเปิดใช้งาน MetaMask");
+        }
+        if (!window.ethers) {
+          throw new Error("โหลด ethers.js ไม่สำเร็จ ลองรีเฟรชหน้าเว็บ");
+        }
+        if (!ethers.isAddress(CONTRACT_ADDRESS) || CONTRACT_ADDRESS === ethers.ZeroAddress) {
+          throw new Error("ใส่ Contract Address จาก Remix ในไฟล์ index.html ก่อนใช้งาน");
+        }
+        const chainId = await wallet.request({ method: "eth_chainId" });
+        if (BigInt(chainId) !== HOODI_CHAIN_ID) {
+          throw new Error("เลือกเครือข่าย Hoodi ใน MetaMask แล้วลองอีกครั้ง");
+        }
+
+        await wallet.request({ method: "eth_requestAccounts" });
+        const provider = new ethers.BrowserProvider(wallet);
+        const network = await provider.getNetwork();
+        if (network.chainId !== HOODI_CHAIN_ID) {
+          throw new Error("เลือกเครือข่าย Hoodi ใน MetaMask แล้วลองอีกครั้ง");
+        }
+        const code = await provider.getCode(CONTRACT_ADDRESS);
+        if (code === "0x") {
+          throw new Error("ไม่พบสัญญาที่อยู่ดังกล่าวบน Hoodi ตรวจ Contract Address จาก Remix");
+        }
+
+        const signer = await provider.getSigner();
+        const account = await signer.getAddress();
+        const connectedBank = new ethers.Contract(CONTRACT_ADDRESS, BANK_ABI, signer);
+
+        // อ่านยอดหนึ่งครั้งเพื่อทดสอบว่าที่อยู่และ ABI ใช้งานด้วยกันได้
+        await refreshBalance(connectedBank);
+        bank = connectedBank;
+        accountLabel.textContent = account;
+        contractLabel.textContent = CONTRACT_ADDRESS;
+        connectButton.textContent = "เชื่อมต่อแล้ว";
+        showStatus("เชื่อมต่อ MetaMask และ Bank แล้ว");
+      } catch (error) {
+        showError(error);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function readAmount() {
+      const amount = amountInput.value.trim();
+      if (!/^\d+(\.\d{1,18})?$/.test(amount)) {
+        throw new Error("กรอกจำนวน ETH เช่น 0.01 โดยใช้จุดและทศนิยมไม่เกิน 18 ตำแหน่ง");
+      }
+      const amountInWei = ethers.parseEther(amount);
+      if (amountInWei <= 0n) {
+        throw new Error("จำนวน ETH ต้องมากกว่า 0");
+      }
+      return amountInWei;
+    }
+
+    async function submitTransaction(action) {
+      if (busy || !bank) return;
+      setBusy(true);
+      transactionLink.hidden = true;
+      try {
+        const amount = readAmount();
+        const actionLabel = action === "deposit" ? "ฝาก" : "ถอน";
+
+        if (action === "withdraw" && amount > await bank.checkBlance()) {
+          throw new Error("จำนวนที่ถอนเกินยอดฝากของคุณ");
+        }
+
+        showStatus("ยืนยันรายการ" + actionLabel + "ใน MetaMask");
+        let transaction;
+        if (action === "deposit") {
+          transaction = await bank.deposit({ value: amount });
+        } else {
+          transaction = await bank.withdraw(amount);
+        }
+
+        transactionLink.href = HOODI_EXPLORER + "/tx/" + transaction.hash;
+        transactionLink.hidden = false;
+        showStatus("ส่งธุรกรรมแล้ว กำลังรอการยืนยัน");
+        const receipt = await transaction.wait();
+        if (receipt.hash !== transaction.hash) {
+          transactionLink.href = HOODI_EXPLORER + "/tx/" + receipt.hash;
+        }
+        amountInput.value = "";
+
+        try {
+          await refreshBalance();
+          showStatus(actionLabel + "สำเร็จและอัปเดตยอดแล้ว");
+        } catch {
+          showStatus(actionLabel + "สำเร็จ กด Check Balance เพื่ออ่านยอดอีกครั้ง");
+        }
+      } catch (error) {
+        showError(error);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function checkBalance() {
+      if (busy || !bank) return;
+      setBusy(true);
+      try {
+        await refreshBalance();
+        showStatus("อัปเดตยอดจาก Smart Contract แล้ว");
+      } catch (error) {
+        showError(error);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    connectButton.addEventListener("click", connectWallet);
+    depositButton.addEventListener("click", () => submitTransaction("deposit"));
+    withdrawButton.addEventListener("click", () => submitTransaction("withdraw"));
+    checkButton.addEventListener("click", checkBalance);
+
+    if (wallet) {
+      wallet.on("accountsChanged", () => {
+        if (bank) window.location.reload();
+      });
+      wallet.on("chainChanged", () => window.location.reload());
+    }
+  </script>
+</body>
+</html>
